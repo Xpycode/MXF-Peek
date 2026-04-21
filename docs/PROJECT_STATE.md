@@ -15,9 +15,9 @@
 ## Current Position
 - **Funnel:** build (ship-prep)
 - **Phase:** implementation (Waves 1–4 done, pivot done, tests done, dead-code sweep done, polish remaining)
-- **Focus:** 5.3 adversarial passes (code-testable anytime) → 5.2b multi-project stress (user-gated). Two tasks between here and v1 shippable.
-- **Status:** running clean — app boots, scans real Avid MediaFiles folders correctly, groups clips by UMID, surfaces project_name, exports CSV+JSON. 26 unit tests green. Source trimmed to 1507 LOC; .app 74 MB. Feature-complete; polishing for release. Bundle/sign scripts now aligned with post-pivot reality (ffprobe-only, `01_Project/…` path, dylib preflight).
-- **Last updated:** 2026-04-21 (P5 bundle-script cleanup done; scripts smoke-tested green)
+- **Focus:** v1.2 player — **Wave P1 spike ✅ DONE 2026-04-21**. All 4 gating criteria (P1.4/5/6/7) green against the real 14-min Brutalist Dresser clip. End-to-end latency 2.5 s (<5 s target). Audio-pair switching via `AVMediaSelectionGroup` works. HLS live-mux + loopback NWListener design validated empirically. Next concrete action = **Wave P2** (ffmpeg bundling) — or spec/plan promotion from Draft → Approved first, user's call.
+- **Status:** v1 feature-complete + public on GitHub. 34 unit tests green. Source ~1690 LOC; .app 74 MB. Post-P2 projected size = **~134 MB** (revised down from 165 MB estimate — ffmpeg 8.1 arm64 static is 60 MB not 90). Spike artifacts at `/tmp/avid-spike/` (discardable).
+- **Last updated:** 2026-04-21 (evening — P1 spike executed against real 14-min DNxHD clip; all 9 tasks green; plan doc updated with findings + operational learnings)
 
 ## Funnel Progress (Ralph-style)
 
@@ -29,15 +29,16 @@
 
 ## Phase Progress
 ```
-[##############......] 71% - task-based (20 archived / 28 total incl. v1.1+v1.2 backlog). v1-only: 20 of 22 done ≈ 91%.
+[###############.....] 76% - task-based (22 archived / 29 total incl. v1.1+v1.2 backlog). v1-only: 21 of 22 done ≈ 95%.
 ```
 
 | Phase | Status | Tasks |
 |-------|--------|-------|
 | Discovery | done | Feasibility + research complete |
 | Planning | done | `IMPLEMENTATION_PLAN.md` + `docs/plans/2026-04-20-ffprobe-pivot.md` |
-| Implementation | active | Waves 1–4 ✅ · pivot 2026-04-20-C ✅ · Waves 4.6-A/4.6-B/4.7/5.0/5.1 ✅ · P5 ✅ · 5.2b + 5.3 remaining for v1 |
-| Polish | pending | After 5.3 green: prep distribution artifacts, version bump |
+| Implementation | done (v1) | Waves 1–4 ✅ · pivot 2026-04-20-C ✅ · Waves 4.6-A/4.6-B/4.7/5.0/5.1 ✅ · P5 ✅ · 5.2b ✅ · 5.3(1-3) ✅ · 5.3-case-4 optional (manual perf run) |
+| Polish | active | First commit public on GitHub; distribution artifacts + notarized build + version bump pending user decision |
+| v1.2 Player | plan ready | `docs/specs/player.md` + `docs/plans/2026-04-22-player-hls.md` both drafted. Design = HLS live-mux + loopback NWListener server + AVPlayer. Wave P1 spike (4h) is the next concrete action; P2-P8 commit on green. |
 
 ## Why this, why now
 Reddit thread (2026-04-20, r/Avid): Kyno is dying, Avid Media Tool is clunky, MDVx only reads databases not media, Resolve Media page handles preview but not orphan detection. Unmet need: *space accountability* — "which MXFs are wasting space, which project do they belong to?"
@@ -73,6 +74,9 @@ Clip grouping by MXF header UMIDs, `.mdb`/`.pmr` orphan cross-reference, project
 - 2026-04-20: Fork, don't extend — new project, reuse Services, rewrite Models + Views
 - 2026-04-20: v1 is read-only; no writes, no preview
 - 2026-04-20: Use `mxf2raw --info` for UMID extraction (no custom MXF parser)
+- 2026-04-21: Public GitHub repo named **MXF-Peek** (not AvidMXFPeek) to dodge trademark association; app-facing display name + bundle ID unchanged
+- 2026-04-21: Preview/playback is the **Kyno-replacement feature**, not polish — promoted from backlog candidate to first-class v1.2 priority (raw Reddit thread confirms MDVx's preview gap is the competitive opening)
+- 2026-04-21: v1.2 player path = ffmpeg remux/transcode to cached `.mov` → AVPlayer (the naïve AVComposition path is dead; AVFoundation can't open Avid OP-Atom MXF). Requires reintroducing ffmpeg to bundle. Gated on Wave P1 spike. **→ REVISED 2026-04-21 late**: design shifted from cached full-file transcode to **HLS live-mux** (Option 2 of 7 surveyed). Uniform ~0.5-2s startup vs linear-in-clip-length for the cached approach. HTTP server is loopback-only NWListener, user-invisible. Verified via probes: ffmpeg H.264/VideoToolbox HLS command works against real MXF at ~9× realtime encode; NWListener `requiredLocalEndpoint = .hostPort(.ipv4(.loopback), .any)` is the clean binding syntax. UNC-path fast-path dropped (semantically wrong for an audit tool). Plan at `docs/plans/2026-04-22-player-hls.md`; Option 5 (custom `AVSampleBufferDisplayLayer` + `libavformat`) noted as v2 ambition.
 
 ## Blockers
 None yet — scaffolding not started.

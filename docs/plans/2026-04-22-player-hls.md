@@ -1,0 +1,422 @@
+# Plan: v1.2 Player via HLS live-mux + localhost loopback server
+
+**Drafted:** 2026-04-21 (evening) for execution 2026-04-22+
+**Status:** ready to execute, awaiting user go-ahead
+**Estimated effort:** P1 spike ~4 h · P2–P8 total ~18–22 h across 3–4 sessions
+**Spec:** `docs/specs/player.md` (Draft until P1 spike lands)
+**Supersedes:** backlog entry "v1.2 preview candidate — AVPlayer with AVComposition stitching"
+**Depends on:** decision 2026-04-20-C (ffprobe-only bundle) — this plan **reintroduces ffmpeg** to the bundle; not a reversal, a controlled addition
+
+---
+
+## 1. Why this plan exists
+
+AVFoundation cannot open Avid OP-Atom MXF. Verified 2026-04-21 via direct `swift` probe against user's real stems:
+
+```
+AVFoundationErrorDomain Code=-11828 "Cannot Open"
+  underlying NSOSStatusErrorDomain Code=-12847
+  "This media format is not supported"
+```
+
+Both video (DNxHD) and audio (PCM mono) stems fail at container level — macOS has no MXF format reader. This kills the original backlog plan ("30 lines of AVComposition stitching"). See `docs/specs/player.md` §"Technical Considerations / Dependencies" for the decision cascade.
+
+After evaluating 7 alternative designs (full options matrix in the spec's research trail), **Option 2 — ffmpeg HLS live-mux + localhost loopback HTTP server + AVPlayer** wins because:
+
+1. **Uniform ~0.5–2 s startup** regardless of clip length. The 38-minute Kowloon clip starts as fast as a 30-second YouTube-import clip. Option 1 (cached full-file transcode) can't solve this — its startup is linear in clip duration.
+2. **Audio-pair switching via `AVMediaSelectionGroup`** is native AVKit — instant swap, no retranscode.
+3. **HTTP server is invisible** to the user. Bound to `127.0.0.1` only: no Local Network prompt (that's for multicast/Bonjour), no firewall prompt (loopback doesn't transit the firewall stack), no credentials, no port UX.
+4. **Incremental over Option 1.** The HTTP server is ~80 LOC (NWListener), the ffmpeg command swaps HLS flags for MOV flags, the rest of the pipeline (cache, model, UI) is identical.
+
+**Not chosen, and why:**
+- Option 4 (AVAssetResourceLoaderDelegate + fragmented MP4) — viable alternative to the server, but more code for the same outcome and a less-beaten path. Consolation prize if the server proves problematic.
+- Option 5 (custom `AVSampleBufferDisplayLayer` + `libavformat`) — the pure NLE architecture, 500–800 LOC, v2 ambition. Free audio switching, zero cache. Worth revisiting after v1.2 ships and we understand real usage.
+- Option 6 (KSPlayer) — GPL license blocks distribution.
+- Option 7 (VLCKit) — `--input-slave` multi-stem sync is experimental/broken; pays framework cost without solving the hard part.
+
+---
+
+## 2. Design overview
+
+### 2.1 Pipeline
+
+```
+┌──────────────────┐
+│  Clip selected   │ (from ScanModel.selectedClipID)
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────────────────────────────┐
+│  PlaybackCoordinator (@Observable)       │
+│                                          │
+│  Cache miss?                             │
+│   ├─► spawn PreviewTranscoder            │
+│   │     ffmpeg → HLS fMP4 segments       │
+│   │     in ~/Library/Caches/.../<clipID>/│
+│   │                                      │
+│   │  FSEvents watches cache dir,         │
+│   │  fires firstSegmentReady when        │
+│   │  playlist.m3u8 + seg_000.m4s exist   │
+│   │                                      │
+│   └─► once firstSegmentReady:            │
+│         open AVPlayerItem(url:           │
+│           http://127.0.0.1:PORT/         │
+│             <clipID>/playlist.m3u8)      │
+│                                          │
+│  Cache hit?                              │
+│   └─► straight to AVPlayerItem open      │
+└────────┬─────────────────────────────────┘
+         │
+         ▼
+┌──────────────────┐          ┌──────────────────────┐
+│  AVPlayerView    │  ◄────── │  PreviewHTTPServer   │
+│  (inside         │          │  NWListener on       │
+│  ClipInspector)  │          │  127.0.0.1:any       │
+│                  │          │  serves cache root   │
+└──────────────────┘          └──────────────────────┘
+```
+
+### 2.2 The verified ffmpeg HLS command
+
+Probed 2026-04-21 against user's real MXF (30 s sample of 13-min DNxHD clip):
+
+```bash
+ffmpeg -y -loglevel error \
+  -i V01.mxf \
+  -i A01.mxf -i A02.mxf \
+  -filter_complex "[1:a:0][2:a:0]join=inputs=2:channel_layout=stereo[pair0]" \
+  -map 0:v:0 -c:v h264_videotoolbox -b:v 4M -pix_fmt yuv420p \
+  -map "[pair0]" -c:a aac -b:a 192k \
+  -f hls -hls_time 4 -hls_playlist_type event \
+  -hls_flags independent_segments+append_list \
+  -hls_segment_type fmp4 \
+  -hls_segment_filename <cache>/<clipID>/seg_%03d.m4s \
+  <cache>/<clipID>/playlist.m3u8
+```
+
+**Verified:**
+- VideoToolbox H.264 encode runs at ~9× realtime on this machine → full 13-min clip = ~86 s full encode, but first segment lands in <1 s wall time
+- Output: ~15 MB/min at 1080p25 4Mbit/s H.264 + 192kbps AAC → full 13-min ≈ 200 MB
+- Valid HLS playlist structure (`EXT-X-VERSION:7`, `EXT-X-MAP: init.mp4`, fMP4 segments)
+
+**Differences from the probe:**
+- Probe used `-hls_playlist_type vod` (closed-ended, written at end only); the real command uses `event` + `append_list` so the playlist grows as segments land and AVPlayer can reread it
+- `independent_segments` flag ensures each segment is self-contained (important for scrubbing)
+
+**Multi-pair audio (4, 6, or 8 stems):** extend the filter graph + `-var_stream_map` — unverified, handled in Wave P1 spike:
+
+```bash
+# Skeleton for 4 stems (2 pairs):
+-filter_complex "[1:a][2:a]join=inputs=2:channel_layout=stereo[pair0]; \
+                 [3:a][4:a]join=inputs=2:channel_layout=stereo[pair1]" \
+-map 0:v -c:v h264_videotoolbox -b:v 4M \
+-map [pair0] -c:a aac -b:a 192k \
+-map [pair1] -c:a aac -b:a 192k \
+-var_stream_map "v:0,agroup:aud a:0,agroup:aud,language:en,name:Pair1,default:yes a:1,agroup:aud,language:en,name:Pair2" \
+-master_pl_name master.m3u8 \
+...
+```
+
+### 2.3 The HTTP server
+
+Swift Network framework `NWListener`, bound to loopback only:
+
+```swift
+let params = NWParameters.tcp
+params.allowLocalEndpointReuse = true
+params.requiredLocalEndpoint = NWEndpoint.hostPort(
+    host: .ipv4(.loopback),  // 127.0.0.1
+    port: .any               // kernel picks
+)
+let listener = try NWListener(using: params)
+listener.stateUpdateHandler = { state in
+    if case .ready = state, let port = listener.port {
+        // assigned port available here
+    }
+}
+listener.newConnectionHandler = { conn in ... }
+listener.start(queue: .main)
+```
+
+Handler: parse HTTP/1.1 GET, map path to a file under cache root, reply with `Content-Type`, `Content-Length`, `Accept-Ranges: bytes`, body. Handle `Range:` requests for byte-range (AVPlayer occasionally uses these; fMP4 segment serving should not need them but supporting costs ~15 LOC).
+
+Content-Type rules:
+- `.m3u8` → `application/vnd.apple.mpegurl`
+- `.m4s` / `.mp4` → `video/mp4` (or `video/iso.segment` — both work)
+- anything else → `application/octet-stream` (defensive; should not occur)
+
+### 2.4 Cache strategy
+
+`~/Library/Caches/com.lucesumbrarum.AvidMXFPeek/previews/<hashKey>/`
+
+`hashKey = SHA-256(clip.materialKey | sorted(clip.files.map { $0.fileURL.path + $0.fileSize }))[:16]`
+
+Including file path + size in the hash means a rescan that finds the *same* files at the *same* sizes reuses the cache. Moving or replacing a file invalidates.
+
+Per-entry directory layout:
+```
+<hashKey>/
+├── playlist.m3u8       (or master.m3u8 + per-rendition playlists for multi-pair)
+├── init.mp4
+├── seg_000.m4s
+├── seg_001.m4s
+├── ...
+└── .transcode-state    (JSON: {"status": "running"|"complete"|"failed", "pid": …, "startedAt": …})
+```
+
+**LRU:** track `accessedAt` via `URLResourceValues.contentAccessDateKey` on the directory. On new transcode start, if total cache size > 10 GB, remove oldest entries until under 80% of budget (8 GB). Evict only entries where `.transcode-state.status == "complete"` — don't delete in-flight.
+
+### 2.5 AVPlayer wiring
+
+```swift
+let url = server.baseURL.appendingPathComponent("\(hashKey)/playlist.m3u8")
+let asset = AVURLAsset(url: url)
+let item = AVPlayerItem(asset: asset)
+player.replaceCurrentItem(with: item)
+
+// Audio-pair switching:
+let group = try await asset.load(.availableMediaCharacteristicsWithMediaSelectionOptions)
+if let audibleGroup = try await asset.loadMediaSelectionGroup(for: .audible) {
+    let options = audibleGroup.options
+    // Present as Picker; on user select:
+    item.select(option, in: audibleGroup)
+}
+```
+
+---
+
+## 3. Waves
+
+### Wave P1 — De-risking spike (timeboxed 4 h) ✅ **COMPLETE 2026-04-21**
+
+**Goal:** answer the remaining unknowns before committing to waves P2+. Throwaway code, not production — validates the design.
+
+Test clip: `/Volumes/1TB extra/Avid MediaFiles/MXF/20260421/V01.E60D568D_8BA778BA77F7EV.mxf` (14 min DNxHD 1080p25 "Building a Brutalist Dresser.mp4", plus A01/A02 siblings).
+
+- [x] **P1.1** Full 14-min VOD HLS transcode → 211 segments + init.mp4, 415 MB total, encode wall time 89 s (9.46× realtime, matches plan estimate). Benign `dnxhd: unknown header 0x00 0x00 0x00 0x00 0x00` on final 12 frames (<0.1%) — MXF tail padding artifact, segments still clean.
+- [x] **P1.2** Live-mux (`event + append_list`) → playlist grows during encode (4 → 8 → 13 → 18 → 23 seg-refs over 10 s of wall time), no ENDLIST until ffmpeg exits. SIGTERM flushes ENDLIST + an unexpected leading `#EXT-X-DISCONTINUITY` — cosmetic only, production path uses natural completion.
+- [x] **P1.3** Throwaway `NWListener` server (`/tmp/avid-spike/p1.3-server.swift`) binds `127.0.0.1:.any`, serves files with correct Content-Types (`.m3u8` → `application/vnd.apple.mpegurl`, `.m4s/.mp4` → `video/mp4`). Verified 200 on playlist, 200 on binary init segment (byte-exact), 404 on missing path, 8 concurrent GETs in 22 ms.
+- [x] **P1.4** AVPlayer opens the http URL while ffmpeg still running → **video visibly plays** (user-confirmed). Server log shows AVPlayer polling playlist (2245B → 5095B across rereads) and fetching segments in playback order — live-mux validated end-to-end.
+- [x] **P1.5** End-to-end latency measured: ffmpeg start → first seg on disk = **0.76 s**; server up = 1.28 s; AVPlayer `.readyToPlay` = +0.43 s after URL handoff. **Total ≈ 2.5 s** (target was <5 s). ✅
+- [x] **P1.6** Multi-pair HLS with `-var_stream_map` → master.m3u8 + 3 rendition playlists (stream_0/video, stream_PairA/audio, stream_PairB/audio). `AVMediaSelectionGroup(.audible)` returns 2 options ("English", "audio_2 - English"). Programmatic `item.select(option, in: group)` verified: selection changes, `currentTime` continues advancing (no player reset). **`AVPlayerView`'s floating controls do NOT expose the audio menu** — confirms §P7.1 must provide a custom Picker.
+- [x] **P1.7** Scrub across full clip → works (user-confirmed "I could scrub and it was reactive").
+- [x] **P1.8** Open http URL before playlist exists → AVPlayer transitions to `.failed` (status=2), UI shows ghost play button + `—:—` timeline, no crash / no hang. Confirms production code must gate `replaceCurrentItem` on `firstSegmentReady` (§2.1 guard is correctly specified).
+- [x] **P1.9** ffmpeg 8.1 arm64 static from martin-riedl.de = **60 MB** (26 MB zipped). `otool -L` shows system-frameworks-only (VideoToolbox, AudioToolbox, AVFoundation present). Projected final .app = **~134 MB** (plan projected 165 — ~30 MB headroom vs. estimate).
+
+**Exit criteria:**
+- P1.4, P1.5, P1.6, P1.7 all green → promote spec to Approved, proceed to Wave P2
+- Any fail → revise plan: likely fall back to Option 1 (cached full-file transcode) OR bump to Option 4 (delegate + fMP4). Do **not** begin Waves P2+ on shaky spike.
+
+**Verdict:** all four gating criteria GREEN. **Cleared to proceed to Wave P2.** Spike scratch artifacts at `/tmp/avid-spike/` (discardable).
+
+### Wave P2 — ffmpeg bundling (depends on P1 pass)
+
+- [ ] **P2.1** Download ffmpeg 8.1 arm64 static from martin-riedl.de, verify static via `otool -L` (only system deps)
+- [ ] **P2.2** Rename `bundle-ffprobe.sh` → `bundle-toolchain.sh`; accept per-binary paths: `./bundle-toolchain.sh ffprobe=<path> ffmpeg=<path>`. Keep the otool dylib preflight for each.
+- [ ] **P2.3** Drop `ffmpeg` into `01_Project/AvidMXFPeek/Resources/ffmpeg`
+- [ ] **P2.4** Update pbxproj: add Resources/ffmpeg to the app target bundle (via `PBXFileSystemSynchronizedRootGroup`, should auto-pick up)
+- [ ] **P2.5** Extend `sign-bundled-binaries.sh` to sign ffmpeg alongside ffprobe (same entitlements + flags)
+- [ ] **P2.6** Add `.ffmpeg` case to `BundledTool` enum in `BundledToolResolver.swift`
+- [ ] **P2.7** Build + launch + verify `.app` size (~165 MB target) and that `BundledToolResolver.path(for: .ffmpeg)` resolves
+
+### Wave P3 — HTTP server (`PreviewHTTPServer`)
+
+- [ ] **P3.1** New file `01_Project/AvidMXFPeek/Services/PreviewHTTPServer.swift` — actor wrapping NWListener
+  - Loopback-only binding via `requiredLocalEndpoint`
+  - Dynamic port (`port: .any`)
+  - Connection handler: parse HTTP/1.1 GET, map path, serve file
+  - Content-Type dispatch on extension
+  - Range request support (optional, do if P1.7 indicates AVPlayer uses them; skip if not)
+  - `var baseURL: URL { get async }` — completes once listener reaches `.ready`
+- [ ] **P3.2** Unit tests in `AvidMXFPeekTests/PreviewHTTPServerTests.swift`:
+  - Start server, serve a test file, GET via URLSession, verify bytes match
+  - Nonexistent path returns 404
+  - Concurrent GETs don't deadlock
+  - Stop server, verify listener state transitions
+- [ ] **P3.3** Lifecycle: server is one-per-app-instance, owned by `PlaybackCoordinator`, started at first clip selection (lazy), stopped at app quit
+
+### Wave P4 — Transcoder (`PreviewTranscoder`)
+
+- [ ] **P4.1** New file `Services/PreviewTranscoder.swift`
+  - `func transcode(clip: Clip, audioPairs: [AudioPair], outputDir: URL) -> AsyncStream<TranscodeEvent>`
+  - Events: `.started(pid)`, `.firstSegmentReady`, `.progress(fraction)`, `.completed`, `.failed(reason)`
+  - `AudioPair` = `(leftStemURL: URL, rightStemURL: URL, label: String)`
+  - Command construction: video always maps V01; audio pairs become N filter_complex `join` stages + matching `-var_stream_map`
+  - Uses the existing `runAndCollect` family from `BMXWrapper.swift` — but this is *not* fire-and-collect; it's long-running with cancellation. Use raw `Process` + `readabilityHandler` here (different shape; cookbook pattern 43 noted this as NOT the pattern's use case)
+  - Progress parsing: `-progress pipe:1` emits `out_time=HH:MM:SS.MS` lines; divide by known clip duration
+  - `firstSegmentReady`: watch output directory with `DispatchSource.makeFileSystemObjectSource`, fire once `playlist.m3u8` AND `seg_000.m4s` both exist
+  - Cancellation: `Process.terminate()` on scope cancel; wait for exit with grace timeout, `kill -9` after 2 s
+- [ ] **P4.2** New file `Models/AudioPair.swift`:
+  - `AudioPair.pairsFromClip(_ clip: Clip) -> [AudioPair]` — groups audio stems by filename convention (`A01+A02`, `A03+A04`, …)
+  - Defensive: if audio stem count is odd, the last stem becomes a mono pair (same URL for L and R channels)
+- [ ] **P4.3** Unit tests:
+  - `AudioPair.pairsFromClip` groups `[A01, A02, A03, A04]` → 2 pairs
+  - `pairsFromClip` with 3 stems → 1 stereo pair + 1 mono
+  - `pairsFromClip` with 0 stems → empty (video-only)
+  - Mock-ffmpeg test for transcoder event sequence (produce a fake output dir step-by-step, verify `.firstSegmentReady` fires)
+
+### Wave P5 — Cache (`PreviewCache`)
+
+- [ ] **P5.1** New file `Services/PreviewCache.swift` — actor
+  - `func pathIfCached(for clip: Clip) -> URL?` (hash-keyed lookup)
+  - `func prepareOutputDir(for clip: Clip) throws -> URL` (creates + returns; touches `.transcode-state`)
+  - `func markComplete(for clip: Clip)` (writes state, updates access time)
+  - `func evictToFit(budgetBytes: Int64)` — LRU sweep
+  - Hash function as described in §2.4
+- [ ] **P5.2** Unit tests:
+  - Hash identical for identical inputs, different for changed file sizes
+  - Eviction: fill cache past budget, call evictToFit, verify oldest entries gone, newest retained
+  - Doesn't evict entries in `.transcode-state == "running"`
+  - Preflight: if free disk < 1 GB, `prepareOutputDir` throws
+
+### Wave P6 — Coordinator (`PlaybackCoordinator` + `PlaybackState`)
+
+- [ ] **P6.1** New file `Models/PlaybackState.swift` — `@Observable`:
+  ```swift
+  @Observable final class PlaybackState {
+      enum Phase {
+          case idle
+          case preparing(elapsed: Date, progress: Double?)
+          case playing
+          case failed(String)
+      }
+      var phase: Phase = .idle
+      var player: AVPlayer?
+      var currentClipID: Clip.ID?
+      var audioPairs: [AudioPair] = []
+      var selectedPair: AudioPair?
+      var audibleGroup: AVMediaSelectionGroup?
+  }
+  ```
+- [ ] **P6.2** New file `Services/PlaybackCoordinator.swift`:
+  - Observes `ScanModel.selectedClipID`
+  - On change: cancel in-flight transcode, look up in cache, spawn transcoder if miss, wire events to `PlaybackState.phase`
+  - Pair switch: call `playerItem.select(option, in: audibleGroup)` — no transcode if all pairs already in the HLS output
+- [ ] **P6.3** Unit tests (mock cache + mock transcoder):
+  - Clip selection transitions phase correctly
+  - Rapid selection changes cancel previous transcode
+  - Pair change with cache hit doesn't respawn ffmpeg
+
+### Wave P7 — UI (`PlayerView`)
+
+- [ ] **P7.1** New file `Views/PlayerView.swift`:
+  - `NSViewRepresentable` wrapping `AVPlayerView` (macOS); pass in `playbackState.player`
+  - SwiftUI overlay for preparing/failed states (spinner + elapsed, error + retry)
+  - Audio pair `Picker` above the player, disabled when `audioPairs.count < 2`
+- [ ] **P7.2** Integrate into `ClipInspectorView`:
+  - Top: `PlayerView` (fixed min-height 240)
+  - Divider
+  - Existing metadata grid below
+- [ ] **P7.3** Inspector-toggle still works (hide inspector → stop playback, free resources)
+- [ ] **P7.4** Build + launch, test against a YouTube-import clip (e.g. Fookls "Your Time Machine") and a camera-native clip
+
+### Wave P8 — Adversarial + polish
+
+- [ ] **P8.1** Add to `MXFFolderScannerTests` style adversarial tests in new `PlayerPipelineTests.swift`:
+  - Clip with 0 audio stems → player shows video silent, picker disabled
+  - Clip with odd audio stem count → mono-pair handling
+  - Missing ffmpeg at runtime → "Preview unavailable" banner, no crash
+  - Disk preflight (<1 GB free) → clear error
+  - Rapid clip switching (simulate 5 selection changes in 1s) → final selection wins, no zombie ffmpeg
+- [ ] **P8.2** Manual QA against real data: switch between clips of widely different lengths, confirm startup latency target
+- [ ] **P8.3** Memory: instrumented run scrubbing a long clip, confirm AVPlayer item / CVPixelBuffer churn stays bounded
+- [ ] **P8.4** Cleanup: app quit mid-transcode leaves no zombie ffmpegs (register `atexit` handler or use `Process.interruptionHandler`)
+
+---
+
+## 4. Dependencies / Blockers
+
+| Item | Who resolves | Why it matters |
+|------|--------------|----------------|
+| ffmpeg 8.1 arm64 static build from martin-riedl.de | User download (or me via curl in Wave P2) | Required bundle addition |
+| User go-ahead after spec + plan review | User | Spec status gates `/execute` start |
+| A clip with **4+ audio stems** for multi-pair testing | User if available, otherwise manufactured via `ffmpeg -i V01.mxf -i A01.mxf -i A01.mxf -i A02.mxf -i A02.mxf` faking pairs | Wave P1.6 + P8.1 |
+
+---
+
+## 5. Risks
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|------------|
+| HLS live-mux with `append_list` writes an incomplete playlist that AVPlayer rejects until endlist | Medium | High (kills the fast-startup promise) | P1.2 + P1.4 validate this first; fallback = poll until playlist has ≥ 1 segment before telling AVPlayer to open |
+| `AVMediaSelectionGroup` doesn't cleanly switch among multiple audio-only HLS renditions | Low-Medium | Medium (audio-pair switch needs retranscode instead) | P1.6 validates; fallback = per-pair transcode with cache keyed on pair index |
+| AVPlayer caches playlist content during live-mux → doesn't see appended segments | Low-Medium | Medium | HTTP headers: `Cache-Control: no-cache`; on playlist reread, set short `Last-Modified`. AVPlayer has been OK with this pattern historically. |
+| H.264 hardware encode artifacts on Avid's non-standard DNxHD progressive output | Low | Low (quality, not correctness) | DNxHR LB fallback if H.264 produces visual glitches |
+| Loopback port grab fails in a locked-down enterprise setting | Very low | Low | Unlikely for user's single-user Mac; if it happens, clear error + retry |
+| Bundle size hitting 165 MB causes GitHub LFS warnings to multiply | Low | Low (cosmetic) | Already over the 50 MB soft warning with ffprobe; ffmpeg adds another file in the same warning class. Non-blocker. |
+
+---
+
+## 6. File inventory
+
+### New files
+
+```
+01_Project/AvidMXFPeek/Services/PreviewHTTPServer.swift      (~200 LOC)
+01_Project/AvidMXFPeek/Services/PreviewTranscoder.swift      (~250 LOC)
+01_Project/AvidMXFPeek/Services/PreviewCache.swift           (~180 LOC)
+01_Project/AvidMXFPeek/Services/PlaybackCoordinator.swift    (~150 LOC)
+01_Project/AvidMXFPeek/Models/AudioPair.swift                (~60 LOC)
+01_Project/AvidMXFPeek/Models/PlaybackState.swift            (~80 LOC)
+01_Project/AvidMXFPeek/Views/PlayerView.swift                (~150 LOC)
+01_Project/AvidMXFPeekTests/PreviewHTTPServerTests.swift     (~120 LOC)
+01_Project/AvidMXFPeekTests/PreviewTranscoderTests.swift     (~100 LOC)
+01_Project/AvidMXFPeekTests/PreviewCacheTests.swift          (~100 LOC)
+01_Project/AvidMXFPeekTests/AudioPairTests.swift             (~80 LOC)
+01_Project/AvidMXFPeekTests/PlayerPipelineTests.swift        (~150 LOC)
+01_Project/AvidMXFPeek/Resources/ffmpeg                      (~90 MB binary)
+bundle-toolchain.sh                                          (rename of bundle-ffprobe.sh, ~80 LOC)
+```
+
+Total new Swift: ~1,620 LOC + bundled binary.
+
+### Modified files
+
+```
+01_Project/AvidMXFPeek/Services/BundledToolResolver.swift    (+5 LOC: .ffmpeg case)
+01_Project/AvidMXFPeek/ContentView.swift                     (ClipInspectorView integration, ~20 LOC)
+01_Project/AvidMXFPeek.xcodeproj/project.pbxproj             (target bundle Resources entry for ffmpeg)
+sign-bundled-binaries.sh                                     (sign ffmpeg alongside ffprobe, +10 LOC)
+docs/TASKS.md                                                (move v1.2 backlog → Current Sprint)
+docs/specs/player.md                                         (promote Draft → Approved post-P1)
+```
+
+### Deleted
+
+```
+bundle-ffprobe.sh  (renamed, not deleted — content moves into bundle-toolchain.sh)
+```
+
+---
+
+## 7. Operational Learnings
+
+- **Cache budget math was 2× optimistic.** §2.4 said 15 MB/min; real output at 4 Mbps H.264 + 192 kbps AAC = 30 MB/min. 10 GB ceiling → ~33 clip-minutes cached, not 50+. Revise §2.4 before Wave P5 (cache) lands, and/or drop bitrate to 2 Mbps for a quality-vs-capacity trade.
+- **`AVPlayerView` floating HUD does not surface `AVMediaSelectionGroup` audio options automatically.** Even with 2 valid audio renditions, no speech-bubble menu appears in the default controls. §P7.1's custom audio-pair Picker is load-bearing, not a nice-to-have.
+- **AVPlayer honors `Cache-Control: no-cache` on HLS playlists.** Empirically confirmed: during P1.4 live-mux, AVPlayer re-fetched `playlist.m3u8` repeatedly as it grew. No special header gymnastics needed beyond the single header the P1.3 server already sets.
+- **`automaticallyWaitsToMinimizeStalling = false`** is appropriate for our use case — playback starts as soon as `readyToPlay` fires, without AVPlayer waiting for extra buffering. Keep this default in production.
+- **ffmpeg tail-of-clip decode warning is benign.** `dnxhd: unknown header 0x00 0x00 0x00 0x00 0x00` on the final ~12 frames of a 21000-frame clip is MXF padding; segments render clean. Don't log-parse for this as a failure indicator.
+- **Binary is cleanly static.** `otool -L` on the martin-riedl.de ffmpeg 8.1 arm64 build shows only system frameworks (`/System/Library`, `/usr/lib/libSystem`, `libc++`, `libbz2`, `libiconv`). No `@executable_path/...` dylib paths to rewrite — unlike the old libbmx era. Wave P2 bundling is strictly "copy file + codesign".
+
+## 8. Blocked Tasks
+
+*Populated when tasks block.*
+
+---
+
+## 9. Execution Log
+
+| Wave | Started | Completed | Commits | Notes |
+|------|---------|-----------|---------|-------|
+| P1 spike | 2026-04-21 evening | 2026-04-21 evening | (not yet committed — spike artifacts in /tmp) | All 9 tasks ✓. End-to-end latency 2.5 s (<5 s target). Audio-pair switching verified. Bundle projection 134 MB. Cleared to P2. |
+| P2 bundling | | | | |
+| P3 server | | | | |
+| P4 transcoder | | | | |
+| P5 cache | | | | |
+| P6 coordinator | | | | |
+| P7 UI | | | | |
+| P8 adversarial | | | | |
+
+---
+
+*Delete when v1.2 ships. Archive to `sessions/` for reference. Plan document for future: `docs/plans/2026-05-NN-player-custom-engine.md` (Option 5, post-v1.2 ambition).*
