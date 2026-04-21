@@ -419,4 +419,98 @@ bundle-ffprobe.sh  (renamed, not deleted — content moves into bundle-toolchain
 
 ---
 
+## 10. Post-P1 plan corrections (2026-04-21 evening)
+
+Research after the spike (Apple docs MCP + existing-codebase audit + web search for HLS/AVPlayer production gotchas) surfaced five plan drifts that require correction **before Wave P2 begins**. None of these invalidate the design; they correct specific implementation details.
+
+### 10.1 §P2.3 / §P2.4 — ffmpeg bundling is a one-line shell-phase edit
+
+**What the plan assumed:** pbxproj uses `PBXFileSystemSynchronizedRootGroup` for main target, so dropping `Resources/ffmpeg` auto-includes it.
+
+**Reality:** pbxproj line 247 has a **Shell Script Build Phase** that runs:
+```bash
+ditto "${SRCROOT}/AvidMXFPeek/Resources/ffprobe" \
+      "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/ffprobe"
+```
+The main target (`A05000003 /* Resources */` + `23438BF32F067F7400ACE31E /* ShellScript */`) is on the **legacy PBXGroup** pattern. `PBXFileSystemSynchronizedRootGroup` is used **only for the test target**. The binary is copied at build time by the shell-script phase, not by a file reference.
+
+**Revised P2.3–P2.4:**
+- [ ] **P2.3** Drop `ffmpeg` binary into `01_Project/AvidMXFPeek/Resources/ffmpeg` (same dir as ffprobe).
+- [ ] **P2.4** Edit pbxproj line 263: append a second `ditto` line to the existing `shellScript = "..."` string:
+  ```
+  shellScript = "  # Copy ffprobe (sole bundled read-path binary post 2026-04-20-C pivot)
+    ditto \"${SRCROOT}/AvidMXFPeek/Resources/ffprobe\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/ffprobe\"
+    ditto \"${SRCROOT}/AvidMXFPeek/Resources/ffmpeg\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/ffmpeg\"
+  ";
+  ```
+  Also update the block's comment from "Copy ffprobe (sole bundled read-path binary...)" to "Copy ffprobe + ffmpeg (read-path + preview-transcode binaries; see 2026-04-22 player plan)".
+
+No `PBXFileReference` / `PBXBuildFile` entries needed. Build-phase `ditto` copies at build time, hardened runtime signing handled by `sign-bundled-binaries.sh`.
+
+### 10.2 §2.3 — HTTP Range support is NOT optional
+
+**What the plan assumed:** `Range:` support is a nice-to-have, skip if P1.7 doesn't indicate AVPlayer uses them.
+
+**Reality:** AVPlayer uses byte-range requests for **duration calculation** during HLS init, independently of segment fetching. The P1 server omitted Range support and P1.4 worked, but this is fragile — RFC 7233 specifies that servers returning `Accept-Ranges: bytes` MUST respond with `206 Partial Content` and `Content-Range: bytes START-END/TOTAL` when the request includes a valid `Range: bytes=START-END`. Unsupported ranges should return `501`.
+
+**Revised P3.1:** `PreviewHTTPServer.swift` **must** parse `Range:` headers and emit 206 responses. ~30 LOC addition:
+
+```swift
+if let rangeHeader = request.headers["Range"], rangeHeader.hasPrefix("bytes=") {
+    let spec = rangeHeader.dropFirst("bytes=".count)
+    // Parse "START-END" or "START-" forms
+    let parts = spec.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+    guard let start = Int(parts[0]) else { /* 400 */ }
+    let end = parts.count == 2 ? Int(parts[1]) ?? (fileSize - 1) : fileSize - 1
+    let slice = body.subdata(in: start..<min(end + 1, fileSize))
+    reply.append(header: "HTTP/1.1 206 Partial Content",
+                 contentRange: "bytes \(start)-\(end)/\(fileSize)",
+                 contentLength: slice.count)
+    reply.append(slice)
+}
+```
+
+Single-range form only (no multipart/byteranges) — AVPlayer doesn't issue multi-range requests for HLS fMP4. Multi-range returns 501.
+
+### 10.3 §2.4 — Cache budget: 30 MB/min, not 15
+
+**Corrected arithmetic:** 4 Mbps video + 192 kbps audio ≈ 525 kB/s ≈ 30 MB/min. Already noted in §7; making it §2.4 canonical. A 10 GB cache holds ~33 clip-minutes, not 50+.
+
+**Recommendation for Wave P5 design:** either (a) raise default cache budget to 20 GB, (b) drop video bitrate to 2 Mbps (quality vs capacity trade-off — 2 Mbps H.264 of transcode-preview quality is still fine for editorial review), or (c) keep 10 GB and make budget user-configurable. Pick at P5 design time.
+
+### 10.4 §P4.1 — firstSegmentReady: prefer polling over DispatchSource
+
+**What the plan assumed:** `DispatchSource.makeFileSystemObjectSource` watches the output directory, fires when `playlist.m3u8` + `seg_000.m4s` both exist.
+
+**Reality:** `DispatchSource.makeFileSystemObjectSource(fileDescriptor:)` monitors a **single fd** with an event mask (`.write`, `.rename`, `.delete`, etc.). For watching a *directory* for new files appearing, you'd open the directory fd and listen for `.write` — but this fires on the directory's mtime change (which happens when *any* entry is added/removed), requiring you to re-enumerate the dir contents every callback. Race-prone and overkill for our case.
+
+**Revised P4.1:** replace with a simple 100 ms polling loop inside the transcoder task:
+```swift
+while !cancelled {
+    let playlist = outputDir.appendingPathComponent("playlist.m3u8")
+    let firstSeg = outputDir.appendingPathComponent("seg_000.m4s")
+    if FileManager.default.fileExists(atPath: playlist.path)
+       && FileManager.default.fileExists(atPath: firstSeg.path) {
+        continuation.yield(.firstSegmentReady)
+        break
+    }
+    try? await Task.sleep(nanoseconds: 100_000_000)  // 100 ms
+}
+```
+Fires within ~100 ms of both files existing (empirically P1.1 showed first segment in 0.76 s; polling adds <15 % latency to that). No fd lifecycle management, no race on dir re-enumeration. If we later need progress-granular signals (new-segment-per-4s), *then* consider DispatchSource / FSEvents.
+
+### 10.5 §5 Risks — add first-play seek-past-transcode-horizon
+
+New row:
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|------------|
+| On first-play of a clip, user scrubs forward past the not-yet-transcoded horizon → AVPlayer stalls or refuses | Medium | Low-Medium (UX surprise once per clip) | (a) After cache hit on subsequent plays, ENDLIST is present and seek is free everywhere. (b) For long clips, consider hinting the user via a subtle indicator on the scrubber showing "encoded to here". (c) Worst case: AVPlayer stalls silently until the segment appears — acceptable; not a crash. Verify with P8.2 manual QA on a 30-min clip. |
+
+### 10.6 Tool-inventory reminder for Wave P2
+
+Current `bundle-ffprobe.sh` has a clean `otool -L | grep -vE '^(/usr/lib/|/System/)'` non-system-dylib check — **lift this verbatim** into `bundle-toolchain.sh`, applied per-binary. `sign-bundled-binaries.sh` uses Apple Development cert SHA-1 `2D26CB1211F32FD4E3C6EF413EC1EDD6F30631AA` and writes an inline entitlements plist via heredoc; ffmpeg gets the **same** entitlements (`com.apple.security.cs.allow-unsigned-executable-memory` + `disable-library-validation`) as ffprobe.
+
+---
+
 *Delete when v1.2 ships. Archive to `sessions/` for reference. Plan document for future: `docs/plans/2026-05-NN-player-custom-engine.md` (Option 5, post-v1.2 ambition).*
