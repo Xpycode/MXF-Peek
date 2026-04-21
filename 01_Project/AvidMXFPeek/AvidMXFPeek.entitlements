@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Required: Allow loading bundled dylibs (libbmx, libMXF, etc.) not signed by your team -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+	<!-- Required: FFmpeg uses JIT/dynamic code for some codecs -->
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<!-- Required: Allow spawning subprocess executables (ffmpeg, bmxtranswrap, mxf2raw) -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+</dict>
+</plist>
