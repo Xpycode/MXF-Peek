@@ -15,6 +15,7 @@
 		A01000009 /* Credits.rtf in Resources */ = {isa = PBXBuildFile; fileRef = A0200000B /* Credits.rtf */; };
 		A01000012 /* BundledToolResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02000014 /* BundledToolResolver.swift */; };
 		A01000018 /* ReportGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0200001A /* ReportGenerator.swift */; };
+		A0100002C /* PreviewHTTPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0200002C /* PreviewHTTPServer.swift */; };
 		A01000028 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02000029 /* Theme.swift */; };
 		A0100002B /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A0700002 /* Sparkle */; };
 /* End PBXBuildFile section */
@@ -41,6 +42,7 @@
 		A0200000B /* Credits.rtf */ = {isa = PBXFileReference; lastKnownFileType = text.rtf; path = Credits.rtf; sourceTree = "<group>"; };
 		A02000014 /* BundledToolResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundledToolResolver.swift; sourceTree = "<group>"; };
 		A0200001A /* ReportGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportGenerator.swift; sourceTree = "<group>"; };
+		A0200002C /* PreviewHTTPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewHTTPServer.swift; sourceTree = "<group>"; };
 		A02000029 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		A0200002A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -118,6 +120,7 @@
 				23438BE22F067E0400ACE31E /* BMXWrapper.swift */,
 				A02000014 /* BundledToolResolver.swift */,
 				A0200001A /* ReportGenerator.swift */,
+				A0200002C /* PreviewHTTPServer.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -283,6 +286,7 @@
 				A01000028 /* Theme.swift in Sources */,
 				A01000012 /* BundledToolResolver.swift in Sources */,
 				A01000018 /* ReportGenerator.swift in Sources */,
+				A0100002C /* PreviewHTTPServer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

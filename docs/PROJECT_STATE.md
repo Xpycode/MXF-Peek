@@ -15,9 +15,9 @@
 ## Current Position
 - **Funnel:** build (ship-prep)
 - **Phase:** implementation (Waves 1–4 done, pivot done, tests done, dead-code sweep done, polish remaining)
-- **Focus:** v1.2 player — **Waves P1 + P2 ✅ DONE**. P1 spike validated HLS live-mux end-to-end (2026-04-21). P2 ffmpeg bundling done (2026-04-22): `.app` now 133 MB with both ffprobe + ffmpeg codesigned under hardened runtime. Next concrete action = **Wave P3** (`PreviewHTTPServer.swift` — NWListener loopback + Range support per §10.2 correction).
-- **Status:** v1 feature-complete + public on GitHub. 34 unit tests still green. Source ~1690 LOC; .app **133 MB** (ffmpeg + ffprobe bundled). `bundle-ffprobe.sh` → `bundle-toolchain.sh` (multi-binary). `BundledTool.ffmpeg` case added. pbxproj shell-script build phase extended.
-- **Last updated:** 2026-04-22 (Wave P2 complete — ffmpeg bundled, signed, build-verified; ready for Wave P3)
+- **Focus:** v1.2 player — **Waves P1 + P2 + P3 ✅ DONE**. P1 spike (2026-04-21) validated HLS live-mux. P2 bundling (2026-04-22) added ffmpeg alongside ffprobe. P3 server (2026-04-22) landed `PreviewHTTPServer.swift` — actor over NWListener, loopback-only, Range support per §10.2. Next: **Wave P4** (`PreviewTranscoder.swift` — ffmpeg process orchestration + AsyncStream event output).
+- **Status:** v1 feature-complete + public on GitHub. **45 tests green** (11 new in PreviewHTTPServerTests: start/stop/idempotent, 404, 403, MIME dispatch, byte-range 206/416/501, concurrent GETs). Source ~1960 LOC (was 1690; +270 server). .app **133 MB**. All operations loopback-only, no firewall/local-network prompts.
+- **Last updated:** 2026-04-22 (Wave P3 complete — PreviewHTTPServer shipped with 11 tests green; ready for Wave P4)
 
 ## Funnel Progress (Ralph-style)
 

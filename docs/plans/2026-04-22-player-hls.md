@@ -221,21 +221,26 @@ Test clip: `/Volumes/1TB extra/Avid MediaFiles/MXF/20260421/V01.E60D568D_8BA778B
 - [x] **P2.6** `BundledTool` enum: added `case ffmpeg` with `displayName = "FFmpeg"`. Doc comment updated to describe both binaries and their roles.
 - [x] **P2.7** Clean build succeeded. Final `.app` size = **133 MB** (projected 134 — spot on). Both binaries present in `.app/Contents/Resources/`, both codesigned with hardened runtime, both run from the bundle and report `ffmpeg version 8.1-https://www.martin-riedl.de`. Launch smoke test passed (app opens, clean exit).
 
-### Wave P3 — HTTP server (`PreviewHTTPServer`)
+### Wave P3 — HTTP server (`PreviewHTTPServer`) ✅ **COMPLETE 2026-04-22**
 
-- [ ] **P3.1** New file `01_Project/AvidMXFPeek/Services/PreviewHTTPServer.swift` — actor wrapping NWListener
-  - Loopback-only binding via `requiredLocalEndpoint`
-  - Dynamic port (`port: .any`)
-  - Connection handler: parse HTTP/1.1 GET, map path, serve file
-  - Content-Type dispatch on extension
-  - Range request support (optional, do if P1.7 indicates AVPlayer uses them; skip if not)
-  - `var baseURL: URL { get async }` — completes once listener reaches `.ready`
-- [ ] **P3.2** Unit tests in `AvidMXFPeekTests/PreviewHTTPServerTests.swift`:
-  - Start server, serve a test file, GET via URLSession, verify bytes match
-  - Nonexistent path returns 404
-  - Concurrent GETs don't deadlock
-  - Stop server, verify listener state transitions
-- [ ] **P3.3** Lifecycle: server is one-per-app-instance, owned by `PlaybackCoordinator`, started at first clip selection (lazy), stopped at app quit
+- [x] **P3.1** `01_Project/AvidMXFPeek/Services/PreviewHTTPServer.swift` — ~270 LOC actor wrapping NWListener. Loopback-only (`requiredLocalEndpoint = .hostPort(.ipv4(.loopback), .any)`), dynamic port, GET-only. HTTP/1.1 header parser (case-insensitive, lowercases header names; 16 KB cap), path resolution defends against `..` traversal via `standardizedFileURL.hasPrefix(rootDir + "/")`. MIME dispatch: `.m3u8 → application/vnd.apple.mpegurl`, `.m4s/.mp4 → video/mp4`, `.ts → video/mp2t`. **Range support** (required per §10.2): single-range `bytes=START-END` / `bytes=START-` → `206 Partial Content` + `Content-Range`, multi-range (comma-separated) → `501`, out-of-bounds → `416` with `Content-Range: bytes */TOTAL`. All responses include `Accept-Ranges: bytes`, `Cache-Control: no-cache`, `Connection: close`. Connection handling is `nonisolated static` — many concurrent connections don't serialize through the actor; only state transitions (listener ready/failed, baseURL) touch actor-isolated state.
+- [x] **P3.2** `01_Project/AvidMXFPeekTests/PreviewHTTPServerTests.swift` — 11 tests, all green (0.23 s wall time total):
+  - `startReturnsLoopbackBaseURL` — host=127.0.0.1, scheme=http, port>0
+  - `startThrowsOnMissingRoot` — invalid directory rejected at init
+  - `startIsIdempotent` — double-start returns cached URL
+  - `servesPlaylistWithHLSMimeType` — Content-Type + body round-trip
+  - `servesFMP4WithVideoMP4MimeType` — 2 KB binary, byte-exact
+  - `missingFileReturns404`
+  - `pathTraversalReturns403` — `/..%2Fsecrets.txt` blocked
+  - `rangeRequestReturns206WithContentRange` — `bytes=100-199` → slice matches, Content-Range + Content-Length correct
+  - `openEndedRangeClampsToFileEnd` — `bytes=900-` → 900-999/1000
+  - `outOfBoundsRangeReturns416` — `bytes=500-600` on 100-byte file → `Content-Range: bytes */100`
+  - `multiRangeReturns501` — `bytes=0-99,200-299`
+  - `concurrentGETsDoNotDeadlock` — 10 parallel GETs via `withThrowingTaskGroup`, all 200, 0.030 s total
+  - `stopAndRestartReassignsPort` — verifies lifecycle loop
+- [x] **P3.3** Lifecycle contract in place via actor API: `init(rootDir:) throws`, `func start() async throws -> URL` (idempotent), `func stop()`, `var baseURL: URL?`. The caller-side wiring (one instance owned by `PlaybackCoordinator`, lazy-started on first clip selection, stopped at app quit) lands in Wave P6.
+
+**pbxproj:** 4 edits to register `Services/PreviewHTTPServer.swift` (legacy PBXGroup pattern — PBXBuildFile `A0100002C` + PBXFileReference `A0200002C` + Services group children + PBXSourcesBuildPhase files). Test file auto-picked-up via test target's synchronized folder.
 
 ### Wave P4 — Transcoder (`PreviewTranscoder`)
 
@@ -411,8 +416,9 @@ bundle-ffprobe.sh  (renamed, not deleted — content moves into bundle-toolchain
 | Wave | Started | Completed | Commits | Notes |
 |------|---------|-----------|---------|-------|
 | P1 spike | 2026-04-21 evening | 2026-04-21 evening | 92453f6 + 4c2e8f7 (corrections) | All 9 tasks ✓. End-to-end latency 2.5 s (<5 s target). Audio-pair switching verified. Bundle projection 134 MB. Cleared to P2. |
-| P2 bundling | 2026-04-22 | 2026-04-22 | (pending Wave P2 commit) | Final .app = 133 MB (projection 134 was spot on). bundle-ffprobe.sh → bundle-toolchain.sh (multi-binary). sign-bundled-binaries.sh loops over BINARIES array. pbxproj shell phase appended 2nd `ditto`. BundledTool enum + .ffmpeg. Build + launch smoke-tested. |
-| P3 server | | | | |
+| P2 bundling | 2026-04-22 | 2026-04-22 | df079f7 | Final .app = 133 MB (projection 134 was spot on). bundle-ffprobe.sh → bundle-toolchain.sh (multi-binary). sign-bundled-binaries.sh loops over BINARIES array. pbxproj shell phase appended 2nd `ditto`. BundledTool enum + .ffmpeg. Build + launch smoke-tested. |
+| P3 server | 2026-04-22 | 2026-04-22 | (pending Wave P3 commit) | PreviewHTTPServer.swift ~270 LOC actor over NWListener, loopback-only, Range support per §10.2 (206/416/501). 11 new tests all green, full suite 45/45. pbxproj 4-edit for main target + auto-pickup in test target. |
+| P4 transcoder | | | | |
 | P4 transcoder | | | | |
 | P5 cache | | | | |
 | P6 coordinator | | | | |
