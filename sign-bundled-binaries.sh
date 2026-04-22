@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Sign the bundled ffprobe for distribution under hardened runtime.
+# Sign the bundled toolchain for distribution under hardened runtime.
 #
 # Usage:
 #   ./sign-bundled-binaries.sh                    # Uses Apple Development cert (SHA-1 hash)
@@ -11,12 +11,9 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RESOURCES_DIR="$SCRIPT_DIR/01_Project/AvidMXFPeek/Resources"
-FFPROBE="$RESOURCES_DIR/ffprobe"
 
-if [ ! -x "$FFPROBE" ]; then
-    echo "Error: $FFPROBE not found. Run ./bundle-ffprobe.sh first."
-    exit 1
-fi
+# Binaries that require hardened-runtime signing. Add new tools here.
+BINARIES=(ffprobe ffmpeg)
 
 if [ -n "$1" ]; then
     IDENTITY="$1"
@@ -42,20 +39,38 @@ cat > "$ENTITLEMENTS" << 'EOF'
 </plist>
 EOF
 
-echo "  Signing ffprobe"
-codesign --force --options runtime --timestamp --sign "$IDENTITY" \
-    --entitlements "$ENTITLEMENTS" "$FFPROBE"
+missing=0
+for name in "${BINARIES[@]}"; do
+    binary="$RESOURCES_DIR/$name"
+    if [ ! -x "$binary" ]; then
+        echo "  ✗ $name not found at $binary — run ./bundle-toolchain.sh first."
+        missing=1
+        continue
+    fi
+    echo "  Signing $name"
+    codesign --force --options runtime --timestamp --sign "$IDENTITY" \
+        --entitlements "$ENTITLEMENTS" "$binary"
+done
 
 rm "$ENTITLEMENTS"
 
-echo ""
-echo "=== Verification ==="
-flags=$(codesign -dv "$FFPROBE" 2>&1 | grep "flags=" | sed 's/.*flags=//')
-team=$(codesign -dv "$FFPROBE" 2>&1 | grep "TeamIdentifier=" | sed 's/.*TeamIdentifier=//')
-echo "  ffprobe: flags=$flags team=$team"
+if [ "$missing" -ne 0 ]; then
+    echo ""
+    echo "Error: one or more binaries missing. Run ./bundle-toolchain.sh and retry."
+    exit 1
+fi
 
 echo ""
-echo "Done. ffprobe signed with Hardened Runtime."
+echo "=== Verification ==="
+for name in "${BINARIES[@]}"; do
+    binary="$RESOURCES_DIR/$name"
+    flags=$(codesign -dv "$binary" 2>&1 | grep "flags=" | sed 's/.*flags=//')
+    team=$(codesign -dv "$binary" 2>&1 | grep "TeamIdentifier=" | sed 's/.*TeamIdentifier=//')
+    echo "  $name: flags=$flags team=$team"
+done
+
+echo ""
+echo "Done. Bundled toolchain signed with Hardened Runtime."
 echo ""
 echo "Next steps:"
 echo "  1. In Xcode: Build Settings > Enable Hardened Runtime = YES"

@@ -2,17 +2,21 @@ import Foundation
 
 /// Bundled command-line tools AvidMXFPeek depends on.
 ///
-/// As of the 2026-04-20-C pivot the app ships with exactly one bundled
-/// binary — `ffprobe` (arm64 static, martin-riedl.de). The prior
-/// bmx/mxf2raw/bmxtranswrap/ffmpeg toolchain + lib dylibs were dropped
-/// when real-data validation showed bmx's libMXF refuses Avid's non-standard
-/// `VideoLineMap` descriptor. See `docs/plans/2026-04-20-ffprobe-pivot.md`.
+/// Two binaries ship with the app (both arm64 static, martin-riedl.de):
+/// - `ffprobe` — MXF metadata read-path. Sole reader post 2026-04-20-C
+///   pivot, after libMXF's `VideoLineMap` assertion rejected Avid's
+///   progressive output. See `docs/plans/2026-04-20-ffprobe-pivot.md`.
+/// - `ffmpeg` — HLS live-mux transcoder for the v1.2 preview player.
+///   Feeds `PreviewTranscoder` → loopback HTTP server → AVPlayer. Added
+///   2026-04-22. See `docs/plans/2026-04-22-player-hls.md`.
 enum BundledTool: String, CaseIterable {
     case ffprobe
+    case ffmpeg
 
     var displayName: String {
         switch self {
         case .ffprobe: return "FFprobe"
+        case .ffmpeg: return "FFmpeg"
         }
     }
 }

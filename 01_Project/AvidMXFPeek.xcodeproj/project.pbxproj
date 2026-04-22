@@ -260,7 +260,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "  # Copy ffprobe (sole bundled read-path binary post 2026-04-20-C pivot)\n  ditto \"${SRCROOT}/AvidMXFPeek/Resources/ffprobe\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/ffprobe\"\n";
+			shellScript = "  # Copy bundled toolchain: ffprobe (MXF read-path) + ffmpeg (HLS preview transcoder; see docs/plans/2026-04-22-player-hls.md)\n  ditto \"${SRCROOT}/AvidMXFPeek/Resources/ffprobe\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/ffprobe\"\n  ditto \"${SRCROOT}/AvidMXFPeek/Resources/ffmpeg\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/ffmpeg\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

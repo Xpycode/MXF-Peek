@@ -15,9 +15,9 @@
 ## Current Position
 - **Funnel:** build (ship-prep)
 - **Phase:** implementation (Waves 1–4 done, pivot done, tests done, dead-code sweep done, polish remaining)
-- **Focus:** v1.2 player — **Wave P1 spike ✅ DONE 2026-04-21**. All 4 gating criteria (P1.4/5/6/7) green against the real 14-min Brutalist Dresser clip. End-to-end latency 2.5 s (<5 s target). Audio-pair switching via `AVMediaSelectionGroup` works. HLS live-mux + loopback NWListener design validated empirically. Next concrete action = **Wave P2** (ffmpeg bundling) — or spec/plan promotion from Draft → Approved first, user's call.
-- **Status:** v1 feature-complete + public on GitHub. 34 unit tests green. Source ~1690 LOC; .app 74 MB. Post-P2 projected size = **~134 MB** (revised down from 165 MB estimate — ffmpeg 8.1 arm64 static is 60 MB not 90). Spike artifacts at `/tmp/avid-spike/` (discardable).
-- **Last updated:** 2026-04-21 (evening — P1 spike executed against real 14-min DNxHD clip; all 9 tasks green; plan doc updated with findings + operational learnings)
+- **Focus:** v1.2 player — **Waves P1 + P2 ✅ DONE**. P1 spike validated HLS live-mux end-to-end (2026-04-21). P2 ffmpeg bundling done (2026-04-22): `.app` now 133 MB with both ffprobe + ffmpeg codesigned under hardened runtime. Next concrete action = **Wave P3** (`PreviewHTTPServer.swift` — NWListener loopback + Range support per §10.2 correction).
+- **Status:** v1 feature-complete + public on GitHub. 34 unit tests still green. Source ~1690 LOC; .app **133 MB** (ffmpeg + ffprobe bundled). `bundle-ffprobe.sh` → `bundle-toolchain.sh` (multi-binary). `BundledTool.ffmpeg` case added. pbxproj shell-script build phase extended.
+- **Last updated:** 2026-04-22 (Wave P2 complete — ffmpeg bundled, signed, build-verified; ready for Wave P3)
 
 ## Funnel Progress (Ralph-style)
 

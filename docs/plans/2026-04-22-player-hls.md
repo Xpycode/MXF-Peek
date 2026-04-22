@@ -209,15 +209,17 @@ Test clip: `/Volumes/1TB extra/Avid MediaFiles/MXF/20260421/V01.E60D568D_8BA778B
 
 **Verdict:** all four gating criteria GREEN. **Cleared to proceed to Wave P2.** Spike scratch artifacts at `/tmp/avid-spike/` (discardable).
 
-### Wave P2 — ffmpeg bundling (depends on P1 pass)
+### Wave P2 — ffmpeg bundling (depends on P1 pass) ✅ **COMPLETE 2026-04-22**
 
-- [ ] **P2.1** Download ffmpeg 8.1 arm64 static from martin-riedl.de, verify static via `otool -L` (only system deps)
-- [ ] **P2.2** Rename `bundle-ffprobe.sh` → `bundle-toolchain.sh`; accept per-binary paths: `./bundle-toolchain.sh ffprobe=<path> ffmpeg=<path>`. Keep the otool dylib preflight for each.
-- [ ] **P2.3** Drop `ffmpeg` into `01_Project/AvidMXFPeek/Resources/ffmpeg`
-- [ ] **P2.4** Update pbxproj: add Resources/ffmpeg to the app target bundle (via `PBXFileSystemSynchronizedRootGroup`, should auto-pick up)
-- [ ] **P2.5** Extend `sign-bundled-binaries.sh` to sign ffmpeg alongside ffprobe (same entitlements + flags)
-- [ ] **P2.6** Add `.ffmpeg` case to `BundledTool` enum in `BundledToolResolver.swift`
-- [ ] **P2.7** Build + launch + verify `.app` size (~165 MB target) and that `BundledToolResolver.path(for: .ffmpeg)` resolves
+> **Note:** P2.3 / P2.4 revised per §10.1 post-spike correction — pbxproj uses legacy PBXGroup + shell-script build phase, not a synchronized folder.
+
+- [x] **P2.1** ffmpeg 8.1 arm64 static from martin-riedl.de, 26 MB zipped → 60 MB unzipped. `otool -L` confirms system-frameworks only (AVFoundation, VideoToolbox, AudioToolbox, libSystem, libc++, libbz2, libiconv). No third-party dylibs.
+- [x] **P2.2** `bundle-ffprobe.sh` → `bundle-toolchain.sh`. New CLI: `./bundle-toolchain.sh ffprobe=<path> ffmpeg=<path>` (either can be omitted). Kept the existing `otool -L | grep -vE '^(/usr/lib/|/System/)'` reject-on-non-system check, now applied per-binary. Idempotent self-copy guard preserved.
+- [x] **P2.3** `cp /tmp/p2-bundling/ffmpeg → 01_Project/AvidMXFPeek/Resources/ffmpeg` (chmod +x).
+- [x] **P2.4** pbxproj line 263 shell-script build phase: appended second `ditto` for ffmpeg alongside ffprobe. Comment updated: `# Copy bundled toolchain: ffprobe (MXF read-path) + ffmpeg (HLS preview transcoder; see docs/plans/2026-04-22-player-hls.md)`.
+- [x] **P2.5** `sign-bundled-binaries.sh` refactored to loop over `BINARIES=(ffprobe ffmpeg)`. Same cert SHA-1 `2D26CB12...`, same entitlements plist (unsigned-memory + disable-library-validation). Verified: `flags=0x10000(runtime) team=FDMSRXXN73` for both.
+- [x] **P2.6** `BundledTool` enum: added `case ffmpeg` with `displayName = "FFmpeg"`. Doc comment updated to describe both binaries and their roles.
+- [x] **P2.7** Clean build succeeded. Final `.app` size = **133 MB** (projected 134 — spot on). Both binaries present in `.app/Contents/Resources/`, both codesigned with hardened runtime, both run from the bundle and report `ffmpeg version 8.1-https://www.martin-riedl.de`. Launch smoke test passed (app opens, clean exit).
 
 ### Wave P3 — HTTP server (`PreviewHTTPServer`)
 
@@ -408,8 +410,8 @@ bundle-ffprobe.sh  (renamed, not deleted — content moves into bundle-toolchain
 
 | Wave | Started | Completed | Commits | Notes |
 |------|---------|-----------|---------|-------|
-| P1 spike | 2026-04-21 evening | 2026-04-21 evening | (not yet committed — spike artifacts in /tmp) | All 9 tasks ✓. End-to-end latency 2.5 s (<5 s target). Audio-pair switching verified. Bundle projection 134 MB. Cleared to P2. |
-| P2 bundling | | | | |
+| P1 spike | 2026-04-21 evening | 2026-04-21 evening | 92453f6 + 4c2e8f7 (corrections) | All 9 tasks ✓. End-to-end latency 2.5 s (<5 s target). Audio-pair switching verified. Bundle projection 134 MB. Cleared to P2. |
+| P2 bundling | 2026-04-22 | 2026-04-22 | (pending Wave P2 commit) | Final .app = 133 MB (projection 134 was spot on). bundle-ffprobe.sh → bundle-toolchain.sh (multi-binary). sign-bundled-binaries.sh loops over BINARIES array. pbxproj shell phase appended 2nd `ditto`. BundledTool enum + .ffmpeg. Build + launch smoke-tested. |
 | P3 server | | | | |
 | P4 transcoder | | | | |
 | P5 cache | | | | |
