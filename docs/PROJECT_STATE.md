@@ -15,9 +15,9 @@
 ## Current Position
 - **Funnel:** build (ship-prep)
 - **Phase:** implementation (Waves 1–4 done, pivot done, tests done, dead-code sweep done, polish remaining)
-- **Focus:** v1.2 player — **Waves P1 → P4 ✅ DONE**. P1 spike + P2 bundling + P3 HTTP server + P4 transcoder all shipped against real data. Next: **Wave P5** (`PreviewCache.swift` — SHA-256 hash-keyed cache under `~/Library/Caches/<bundle-id>/previews/`, LRU eviction, disk-space preflight).
-- **Status:** v1 feature-complete + public on GitHub. **63 tests green** (11 for PreviewHTTPServer, 11 for PreviewTranscoder, 7 for AudioPair). Source ~2290 LOC (was 1960; +330 transcoder+pair). .app **133 MB**. Full preview pipeline (HTTP server + ffmpeg orchestration + pair derivation) shipped; wiring into ClipInspector via PlaybackCoordinator in Wave P6.
-- **Last updated:** 2026-04-22 (Wave P4 complete — PreviewTranscoder + AudioPair shipped with 18 tests; ready for Wave P5)
+- **Focus:** v1.2 player — **Waves P1 → P5 ✅ DONE**. Full backing infrastructure for preview playback is on disk: HTTP server (P3), ffmpeg orchestrator (P4), stereo pair derivation (P4), SHA-256 hash-keyed cache with LRU eviction (P5). Next: **Wave P6** (`PlaybackCoordinator` + `PlaybackState` — glues the four services together and observes `ScanModel.selectedClipID`).
+- **Status:** v1 feature-complete + public on GitHub. **79 tests green** (14 new for PreviewCache: hashing, preflight, state lifecycle, LRU eviction). Source ~2540 LOC (was 2290; +250 cache). .app **133 MB**. All 4 preview services shipped as self-contained units; P6 adds the orchestration layer.
+- **Last updated:** 2026-04-22 (Wave P5 complete — PreviewCache with 14 tests + caught the `appendingPathComponent` fs-probe URL equality gotcha; ready for Wave P6)
 
 ## Funnel Progress (Ralph-style)
 

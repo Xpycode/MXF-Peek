@@ -255,19 +255,19 @@ Test clip: `/Volumes/1TB extra/Avid MediaFiles/MXF/20260421/V01.E60D568D_8BA778B
 
 **Full test suite: 63 @Test functions, 0 failures.**
 
-### Wave P5 — Cache (`PreviewCache`)
+### Wave P5 — Cache (`PreviewCache`) ✅ **COMPLETE 2026-04-22**
 
-- [ ] **P5.1** New file `Services/PreviewCache.swift` — actor
-  - `func pathIfCached(for clip: Clip) -> URL?` (hash-keyed lookup)
-  - `func prepareOutputDir(for clip: Clip) throws -> URL` (creates + returns; touches `.transcode-state`)
-  - `func markComplete(for clip: Clip)` (writes state, updates access time)
-  - `func evictToFit(budgetBytes: Int64)` — LRU sweep
-  - Hash function as described in §2.4
-- [ ] **P5.2** Unit tests:
-  - Hash identical for identical inputs, different for changed file sizes
-  - Eviction: fill cache past budget, call evictToFit, verify oldest entries gone, newest retained
-  - Doesn't evict entries in `.transcode-state == "running"`
-  - Preflight: if free disk < 1 GB, `prepareOutputDir` throws
+- [x] **P5.1** `Services/PreviewCache.swift` (~250 LOC) — actor. Public API: `pathIfCached(for:)`, `prepareOutputDir(for:pid:)`, `markComplete(for:)`, `markFailed(for:reason:)`, `evictToFit(budgetBytes:)`, `totalSize()`, `state(for:)`, `defaultRootDir()`. Hash key = SHA-256 of `"\(materialKey)|\(path1)|\(size1)|…"` → first 16 hex chars. State file `.transcode-state` is JSON `{status, pid, startedAt, accessedAt, reason}` with ISO8601 dates, pretty-printed + sorted keys. LRU sort by `accessedAt` ascending. Disk-space preflight threshold configurable (default 1 GB, overridable for tests).
+- [x] **P5.2** Tests (14, all green):
+  - **Hashing** (4): stable across identical inputs, order-independent on files, changes on file-size / file-path / materialKey change. 16-char length assertion.
+  - **prepareOutputDir** (3): creates dir + running state; wipes prior contents on re-prepare; throws `CacheError.insufficientDiskSpace` when minFreeBytes > real disk.
+  - **pathIfCached** (4): returns nil for missing / running / failed; returns URL for complete.
+  - **Eviction** (3): no-op when under budget; removes oldest complete entries first (tested with explicit-timestamp writes, not `Task.sleep` — parallel-test timing races); never touches running entries (running one survives even when older than a newer complete one).
+- [x] **Key gotcha caught during development:** `URL.appendingPathComponent(_:)` without explicit `isDirectory:` does a filesystem probe to set `hasDirectoryPath`. The flag flips between calls as the directory gets created, which breaks URL equality across `prepareOutputDir` invocations on the same clip. Fix: always pass `isDirectory: true` for directory paths. Documented inline on `directoryURL(for:)`.
+
+**pbxproj:** 4 edits — `PBXBuildFile` A0100002F + `PBXFileReference` A0200002F + Services group child + `PBXSourcesBuildPhase`. Test file auto-picked-up.
+
+**Full test suite: 79 @Test functions, 0 failures.**
 
 ### Wave P6 — Coordinator (`PlaybackCoordinator` + `PlaybackState`)
 
@@ -411,8 +411,9 @@ bundle-ffprobe.sh  (renamed, not deleted — content moves into bundle-toolchain
 | P1 spike | 2026-04-21 evening | 2026-04-21 evening | 92453f6 + 4c2e8f7 (corrections) | All 9 tasks ✓. End-to-end latency 2.5 s (<5 s target). Audio-pair switching verified. Bundle projection 134 MB. Cleared to P2. |
 | P2 bundling | 2026-04-22 | 2026-04-22 | df079f7 | Final .app = 133 MB (projection 134 was spot on). bundle-ffprobe.sh → bundle-toolchain.sh (multi-binary). sign-bundled-binaries.sh loops over BINARIES array. pbxproj shell phase appended 2nd `ditto`. BundledTool enum + .ffmpeg. Build + launch smoke-tested. |
 | P3 server | 2026-04-22 | 2026-04-22 | 37a7bb5 | PreviewHTTPServer.swift ~270 LOC actor over NWListener, loopback-only, Range support per §10.2 (206/416/501). 11 new tests all green, full suite 45/45. pbxproj 4-edit for main target + auto-pickup in test target. |
-| P4 transcoder | 2026-04-22 | 2026-04-22 | (pending Wave P4 commit) | PreviewTranscoder.swift ~260 LOC (Process + AsyncStream + 100 ms poll per §10.4) + AudioPair.swift ~70 LOC. 18 new tests (buildArgs shape for 4 scenarios, isFirstSegmentReady for 5, parseOutTime, pair grouping for 7 cases). Full suite 63/63. |
-| P5 cache | | | | |
+| P4 transcoder | 2026-04-22 | 2026-04-22 | a2f8706 | PreviewTranscoder.swift ~260 LOC (Process + AsyncStream + 100 ms poll per §10.4) + AudioPair.swift ~70 LOC. 18 new tests (buildArgs shape for 4 scenarios, isFirstSegmentReady for 5, parseOutTime, pair grouping for 7 cases). Full suite 63/63. |
+| P5 cache | 2026-04-22 | 2026-04-22 | (pending Wave P5 commit) | PreviewCache.swift ~250 LOC (actor, SHA-256 16-char hash, JSON state w/ accessedAt LRU). 14 new tests covering hashing/preflight/lifecycle/eviction. Caught `appendingPathComponent(_:)` fs-probe URL-equality gotcha. |
+| P6 coordinator | | | | |
 | P4 transcoder | | | | |
 | P5 cache | | | | |
 | P6 coordinator | | | | |
