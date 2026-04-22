@@ -16,6 +16,8 @@
 		A01000012 /* BundledToolResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02000014 /* BundledToolResolver.swift */; };
 		A01000018 /* ReportGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0200001A /* ReportGenerator.swift */; };
 		A0100002C /* PreviewHTTPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0200002C /* PreviewHTTPServer.swift */; };
+		A0100002D /* AudioPair.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0200002D /* AudioPair.swift */; };
+		A0100002E /* PreviewTranscoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0200002E /* PreviewTranscoder.swift */; };
 		A01000028 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02000029 /* Theme.swift */; };
 		A0100002B /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A0700002 /* Sparkle */; };
 /* End PBXBuildFile section */
@@ -43,6 +45,8 @@
 		A02000014 /* BundledToolResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundledToolResolver.swift; sourceTree = "<group>"; };
 		A0200001A /* ReportGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportGenerator.swift; sourceTree = "<group>"; };
 		A0200002C /* PreviewHTTPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewHTTPServer.swift; sourceTree = "<group>"; };
+		A0200002D /* AudioPair.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPair.swift; sourceTree = "<group>"; };
+		A0200002E /* PreviewTranscoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewTranscoder.swift; sourceTree = "<group>"; };
 		A02000029 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		A0200002A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -109,6 +113,7 @@
 		A04000004 /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				A0200002D /* AudioPair.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -121,6 +126,7 @@
 				A02000014 /* BundledToolResolver.swift */,
 				A0200001A /* ReportGenerator.swift */,
 				A0200002C /* PreviewHTTPServer.swift */,
+				A0200002E /* PreviewTranscoder.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -287,6 +293,8 @@
 				A01000012 /* BundledToolResolver.swift in Sources */,
 				A01000018 /* ReportGenerator.swift in Sources */,
 				A0100002C /* PreviewHTTPServer.swift in Sources */,
+				A0100002D /* AudioPair.swift in Sources */,
+				A0100002E /* PreviewTranscoder.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

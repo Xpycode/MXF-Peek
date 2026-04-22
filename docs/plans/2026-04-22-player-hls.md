@@ -242,25 +242,18 @@ Test clip: `/Volumes/1TB extra/Avid MediaFiles/MXF/20260421/V01.E60D568D_8BA778B
 
 **pbxproj:** 4 edits to register `Services/PreviewHTTPServer.swift` (legacy PBXGroup pattern — PBXBuildFile `A0100002C` + PBXFileReference `A0200002C` + Services group children + PBXSourcesBuildPhase files). Test file auto-picked-up via test target's synchronized folder.
 
-### Wave P4 — Transcoder (`PreviewTranscoder`)
+### Wave P4 — Transcoder (`PreviewTranscoder`) ✅ **COMPLETE 2026-04-22**
 
-- [ ] **P4.1** New file `Services/PreviewTranscoder.swift`
-  - `func transcode(clip: Clip, audioPairs: [AudioPair], outputDir: URL) -> AsyncStream<TranscodeEvent>`
-  - Events: `.started(pid)`, `.firstSegmentReady`, `.progress(fraction)`, `.completed`, `.failed(reason)`
-  - `AudioPair` = `(leftStemURL: URL, rightStemURL: URL, label: String)`
-  - Command construction: video always maps V01; audio pairs become N filter_complex `join` stages + matching `-var_stream_map`
-  - Uses the existing `runAndCollect` family from `BMXWrapper.swift` — but this is *not* fire-and-collect; it's long-running with cancellation. Use raw `Process` + `readabilityHandler` here (different shape; cookbook pattern 43 noted this as NOT the pattern's use case)
-  - Progress parsing: `-progress pipe:1` emits `out_time=HH:MM:SS.MS` lines; divide by known clip duration
-  - `firstSegmentReady`: watch output directory with `DispatchSource.makeFileSystemObjectSource`, fire once `playlist.m3u8` AND `seg_000.m4s` both exist
-  - Cancellation: `Process.terminate()` on scope cancel; wait for exit with grace timeout, `kill -9` after 2 s
-- [ ] **P4.2** New file `Models/AudioPair.swift`:
-  - `AudioPair.pairsFromClip(_ clip: Clip) -> [AudioPair]` — groups audio stems by filename convention (`A01+A02`, `A03+A04`, …)
-  - Defensive: if audio stem count is odd, the last stem becomes a mono pair (same URL for L and R channels)
-- [ ] **P4.3** Unit tests:
-  - `AudioPair.pairsFromClip` groups `[A01, A02, A03, A04]` → 2 pairs
-  - `pairsFromClip` with 3 stems → 1 stereo pair + 1 mono
-  - `pairsFromClip` with 0 stems → empty (video-only)
-  - Mock-ffmpeg test for transcoder event sequence (produce a fake output dir step-by-step, verify `.firstSegmentReady` fires)
+- [x] **P4.1** `Services/PreviewTranscoder.swift` (~260 LOC) — struct with a single `transcode(videoStemURL:audioPairs:durationSeconds:outputDir:) -> AsyncStream<TranscodeEvent>` entry point. Events: `.started(pid:)` / `.firstSegmentReady` / `.progress(fraction:)` / `.completed` / `.failed(reason:)`. Raw `Process` + two `readabilityHandler`s (stdout for `-progress pipe:1`, stderr accumulated into a lock-protected `StderrBuffer` for `failed()` reason). `continuation.onTermination` runs `process.terminate()` on consumer cancel, and schedules `SIGKILL` via `DispatchQueue.global.asyncAfter(2.0)` if the process is still alive after the grace window. FirstSegmentReady via 100 ms poll (per §10.4 correction; the `DispatchSource.makeFileSystemObjectSource` original plan was dropped).
+- [x] **P4.2** `Models/AudioPair.swift` (~70 LOC) — `AudioPair.pairsFromClip(_ clip: Clip) -> [AudioPair]`. Sorts audio stems by filename (A01, A02, …), groups two-at-a-time, odd count → mono pair (same URL both channels), video stems filtered by `videoTrackCount > 0`. Label format `"A01_A02"` (underscore, not `+`, for clean use in `-var_stream_map name:…`) or `"A05_mono"`.
+- [x] **P4.3** Tests (18 new, all green):
+  - `AudioPairTests.swift` (7): `videoOnlyClipProducesNoPairs`, `clipWithNoFilesProducesNoPairs`, `twoAudioStemsProduceOneStereoPair`, `fourAudioStemsProduceTwoPairs`, `oddAudioStemCountProducesFinalMonoPair`, `singleAudioStemBecomesMonoPair`, `audioStemsAreSortedByFilenameBeforePairing`.
+  - `PreviewTranscoderTests.swift` (11): `parseOutTime` well-formed + malformed; `buildArgs` video-only / single-pair / multi-pair / mono-pair (verifies `[1:a:0][1:a:0]join` reuses same input); `isFirstSegmentReady` empty / single-rendition-ready / single-partial / multi-rendition-ready / multi-rendition-missing-seg.
+  - Rationale for not running real ffmpeg in tests: the process-orchestration surface (cancellation, pipe handlers, termination) depends on timing + signal semantics that are flaky in unit tests. Wave P6 integration tests will exercise it end-to-end against the bundled ffmpeg.
+
+**pbxproj:** 5 edits — 2 `PBXBuildFile`, 2 `PBXFileReference`, plus 2 group-children insertions (Models gains AudioPair, Services gains PreviewTranscoder) and 2 `PBXSourcesBuildPhase` entries. Test files auto-picked-up.
+
+**Full test suite: 63 @Test functions, 0 failures.**
 
 ### Wave P5 — Cache (`PreviewCache`)
 
@@ -417,8 +410,9 @@ bundle-ffprobe.sh  (renamed, not deleted — content moves into bundle-toolchain
 |------|---------|-----------|---------|-------|
 | P1 spike | 2026-04-21 evening | 2026-04-21 evening | 92453f6 + 4c2e8f7 (corrections) | All 9 tasks ✓. End-to-end latency 2.5 s (<5 s target). Audio-pair switching verified. Bundle projection 134 MB. Cleared to P2. |
 | P2 bundling | 2026-04-22 | 2026-04-22 | df079f7 | Final .app = 133 MB (projection 134 was spot on). bundle-ffprobe.sh → bundle-toolchain.sh (multi-binary). sign-bundled-binaries.sh loops over BINARIES array. pbxproj shell phase appended 2nd `ditto`. BundledTool enum + .ffmpeg. Build + launch smoke-tested. |
-| P3 server | 2026-04-22 | 2026-04-22 | (pending Wave P3 commit) | PreviewHTTPServer.swift ~270 LOC actor over NWListener, loopback-only, Range support per §10.2 (206/416/501). 11 new tests all green, full suite 45/45. pbxproj 4-edit for main target + auto-pickup in test target. |
-| P4 transcoder | | | | |
+| P3 server | 2026-04-22 | 2026-04-22 | 37a7bb5 | PreviewHTTPServer.swift ~270 LOC actor over NWListener, loopback-only, Range support per §10.2 (206/416/501). 11 new tests all green, full suite 45/45. pbxproj 4-edit for main target + auto-pickup in test target. |
+| P4 transcoder | 2026-04-22 | 2026-04-22 | (pending Wave P4 commit) | PreviewTranscoder.swift ~260 LOC (Process + AsyncStream + 100 ms poll per §10.4) + AudioPair.swift ~70 LOC. 18 new tests (buildArgs shape for 4 scenarios, isFirstSegmentReady for 5, parseOutTime, pair grouping for 7 cases). Full suite 63/63. |
+| P5 cache | | | | |
 | P4 transcoder | | | | |
 | P5 cache | | | | |
 | P6 coordinator | | | | |
