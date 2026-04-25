@@ -413,12 +413,12 @@ bundle-ffprobe.sh  (renamed, not deleted — content moves into bundle-toolchain
 | P3 server | 2026-04-22 | 2026-04-22 | 37a7bb5 | PreviewHTTPServer.swift ~270 LOC actor over NWListener, loopback-only, Range support per §10.2 (206/416/501). 11 new tests all green, full suite 45/45. pbxproj 4-edit for main target + auto-pickup in test target. |
 | P4 transcoder | 2026-04-22 | 2026-04-22 | a2f8706 | PreviewTranscoder.swift ~260 LOC (Process + AsyncStream + 100 ms poll per §10.4) + AudioPair.swift ~70 LOC. 18 new tests (buildArgs shape for 4 scenarios, isFirstSegmentReady for 5, parseOutTime, pair grouping for 7 cases). Full suite 63/63. |
 | P5 cache | 2026-04-22 | 2026-04-22 | (pending Wave P5 commit) | PreviewCache.swift ~250 LOC (actor, SHA-256 16-char hash, JSON state w/ accessedAt LRU). 14 new tests covering hashing/preflight/lifecycle/eviction. Caught `appendingPathComponent(_:)` fs-probe URL-equality gotcha. |
-| P6 coordinator | | | | |
-| P4 transcoder | | | | |
-| P5 cache | | | | |
-| P6 coordinator | | | | |
-| P7 UI | | | | |
-| P8 adversarial | | | | |
+| P6 coordinator | 2026-04-22 | 2026-04-22 | (pending) | PlaybackState.swift ~78 LOC (@Observable Phase enum) + PlaybackCoordinator.swift ~295 LOC (withObservationTracking+re-arm per §11.1, Task supersedence per §11.2, AVPlayerItem.status observer per §P6.4). Refactored injected transcoder from factory to closure for testability. Moved `selectedClipID` from ContentView @State onto ScanModel with `@Bindable var model = model` shadowing in body. 8 new tests all green (full suite 87/87). |
+| P7 UI | 2026-04-22 | 2026-04-22 | (pending) | PlayerView.swift ~136 LOC (NSViewRepresentable(AVPlayerView) + phase overlays + audio-pair Picker). AvidMXFPeekApp.swift rewritten to construct the coordinator graph in `.task` with graceful fallback (~65 LOC). ContentView/ClipInspectorView refactored: model/playbackState/coordinator passed as params, inspector body split into PlayerView + Divider + ScrollView(metadataGrid), showInspector OFF clears selection → coordinator tears down. Fixed dead `outputDir` variable in PlaybackCoordinator (unused-var warning). Build: 0 errors, 0 Swift warnings. Tests: 87/87. Smoke-launched, no init errors. Manual QA (§P7.4) pending real-data pass by user. |
+| P8.1 adversarial | 2026-04-25 | 2026-04-25 | (pending) | 4 new tests appended to PlaybackCoordinatorTests.swift (~150 LOC). Coverage: video-only clip (empty audioPairs, no failure), odd audio stem count (final mono pair, no failure), disk preflight failure → `.failed("Disk preflight failed: …")`, 5 rapid selections in tight loop (all 5 transcodes start, ≥4 cancel via onTermination, final clip wins). Caught one flake on `rapidSelectionChangesCancelPriorTranscode` under parallel-test timing pressure — passes cleanly on re-run; not blocking. Total suite: 91/91. |
+| P8.2 manual QA | | | | Pending user run against real `Avid MediaFiles/MXF/1` folder per plan §P7.4 / §P8.2. |
+| P8.3 memory | | | | Pending Instruments run (scrub long clip, verify CVPixelBuffer churn bounded). |
+| P8.4 zombie cleanup | 2026-04-25 | 2026-04-25 | (pending) | New `Services/AppDelegate.swift` (~30 LOC) wired via `@NSApplicationDelegateAdaptor`. Cmd-Q → `applicationShouldTerminate` returns `.terminateLater`, async Task awaits `coordinator.shutdown()`, then `reply(toApplicationShouldTerminate: true)`. Coordinator gained `activePIDs: Set<pid_t>` tracked from `.started(pid)` events (main loop + tail-drain via `removeActivePID`); `shutdown()` SIGTERMs all tracked pids, sleeps 500 ms (10× ffmpeg HLS ENDLIST flush time per P1.2), SIGKILLs survivors. New test `shutdownSIGTERMsTrackedSubprocess` spawns `/bin/sleep 30`, verifies it dies after `coordinator.shutdown()`. Full suite 92/92. **Cannot defend against SIGKILL of the app itself** (force-quit, crash) — Darwin has no `PR_SET_PDEATHSIG`; documented limitation. |
 
 ---
 
@@ -513,6 +513,104 @@ New row:
 ### 10.6 Tool-inventory reminder for Wave P2
 
 Current `bundle-ffprobe.sh` has a clean `otool -L | grep -vE '^(/usr/lib/|/System/)'` non-system-dylib check — **lift this verbatim** into `bundle-toolchain.sh`, applied per-binary. `sign-bundled-binaries.sh` uses Apple Development cert SHA-1 `2D26CB1211F32FD4E3C6EF413EC1EDD6F30631AA` and writes an inline entitlements plist via heredoc; ffmpeg gets the **same** entitlements (`com.apple.security.cs.allow-unsigned-executable-memory` + `disable-library-validation`) as ffprobe.
+
+---
+
+## 11. Pre-P6 corrections (2026-04-22, post-P5)
+
+Cross-verified Wave P6 design against Apple docs (Observation framework + AVFoundation) before writing code. Three implementation details need to be tightened in the plan so the P6 author doesn't rediscover them mid-wave.
+
+### 11.1 §P6.2 — `withObservationTracking` fires ONCE and detaches
+
+**What the plan assumed:** "Observes `ScanModel.selectedClipID`" with no mention of how.
+
+**Reality:** [`withObservationTracking(_:onChange:)`](https://developer.apple.com/documentation/observation/withobservationtracking(_:onchange:)) (macOS 14+) fires `onChange` **exactly once, the first time any property read inside `apply` changes, then detaches.** It is not a long-lived subscription. To keep observing, the `onChange` closure must re-enter the tracking call.
+
+**Revised P6.2 — add re-arming observer scaffold:**
+
+```swift
+private func observeSelection() {
+    withObservationTracking {
+        _ = scanModel.selectedClipID              // registers dependency
+    } onChange: { [weak self] in
+        Task { @MainActor in
+            self?.handleSelectionChange()
+            self?.observeSelection()               // re-arm — critical
+        }
+    }
+}
+```
+
+Called once from `init` (or on first `start()` call). Without re-arm, only the *first* clip selection after app launch would be observed — a silent-failure bug that unit tests won't catch unless they assert on multiple consecutive selection changes. Wave P6.3 must include `rapid selection changes cancel previous transcode` (already listed) **and** `selection changes continue to fire observer after first change` (new).
+
+No "Combine publisher for @Observable" exists — Apple explicitly moved away from that model. The `@Sendable` on the inner closure is the hint that it's meant to be bridged to structured concurrency, not Combine.
+
+### 11.2 §P6.2 — Make task supersedence explicit
+
+**What the plan assumed:** "cancel in-flight transcode" (mechanism unspecified).
+
+**Reality:** The canonical structured-concurrency pattern for "only the latest request wins":
+
+```swift
+private var currentPrepTask: Task<Void, Never>?
+
+@MainActor
+private func handleSelectionChange() {
+    currentPrepTask?.cancel()                      // supersedes prior
+    guard let clipID = scanModel.selectedClipID else {
+        state.phase = .idle
+        return
+    }
+    currentPrepTask = Task { [weak self] in
+        await self?.prepare(for: clipID)
+    }
+}
+```
+
+This cooperates with `PreviewTranscoder`'s existing `AsyncStream.Continuation.onTermination` (Wave P4.1) — consumer-side cancellation already triggers `Process.terminate()` + 2s SIGKILL grace. No new teardown plumbing needed; just hold the `Task` handle and cancel it.
+
+Note the `@MainActor` isolation — the handler runs on main because `ScanModel.selectedClipID` is typically main-isolated, and the subsequent `AVPlayer` work should also be main-isolated (AVKit view-side APIs require it).
+
+### 11.3 New P6.4 — AVPlayerItem.status observer (was implicit)
+
+**What the plan assumed:** "wire events to `PlaybackState.phase`" — but the AVPlayer side of that wiring was invisible. Only the ffmpeg/cache side was specified.
+
+**Reality:** After `replaceCurrentItem`, the coordinator owes the view layer a `.playing` or `.failed(_)` transition. Source of truth is `AVPlayerItem.status`. Two state-machine inputs distinct from the `firstSegmentReady` gate must be observed:
+
+- Plan §2.1 gate: `firstSegmentReady` (file existence on disk) → decides *when to open the URL at all*
+- New §P6.4 observer: `AVPlayerItem.status` → decides *when to flip `.preparing` → `.playing` or `.failed`*
+
+Two different "not ready" states share a symptom but have different causes. Logging should differentiate.
+
+**New P6.4 task:**
+
+- [ ] **P6.4** `AVPlayerItem.status` observer bridged to `PlaybackState.phase`. KVO-to-AsyncStream bridge or the modern `for await status in item.statusUpdates` pattern (Apple's recommended replacement for KVO on macOS 14+):
+
+  ```swift
+  private func observePlayerItemStatus(_ item: AVPlayerItem) async {
+      for await _ in item.publisher(for: \.status).values {
+          switch item.status {
+          case .readyToPlay:
+              state.phase = .playing
+              if let group = try? await asset.loadMediaSelectionGroup(for: .audible) {
+                  state.audibleGroup = group
+              }
+          case .failed:
+              state.phase = .failed(item.error?.localizedDescription ?? "unknown")
+          case .unknown:
+              break
+          @unknown default:
+              break
+          }
+      }
+  }
+  ```
+
+  Task-scoped inside `currentPrepTask` so it gets cancelled on selection change (no leaked observers across item swaps). Populate `PlaybackState.audibleGroup` and `PlaybackState.audioPairs` once status is `.readyToPlay` — the asset doesn't reliably report selection groups earlier.
+
+### 11.4 Reminder: §P7.1 `NSViewRepresentable(AVPlayerView)` over `VideoPlayer`
+
+Double-checked against [AVPlayerView](https://developer.apple.com/documentation/avkit/avplayerview) vs [SwiftUI.VideoPlayer](https://developer.apple.com/documentation/avkit/videoplayer) reference docs. The plan's choice (raw `AVPlayerView` wrapped in `NSViewRepresentable`) remains correct. `VideoPlayer` would lose: `showsTimecodes`, `showsFrameSteppingButtons`, `beginTrimming`, `contentOverlayView`, `flashChapterNumber`, QuickTime JKL shortcuts, `controlsStyle` options. For an editorial auditor, **timecode display is non-negotiable** — this is the whole reason an editor opens the preview (to verify what the MXF actually contains). Reason elevated from "we need a Picker" to "editorial workflow requires frame-accurate transport controls." No revision to P7.1 bullets, just load-bearing context for the author.
 
 ---
 

@@ -15,9 +15,9 @@
 ## Current Position
 - **Funnel:** build (ship-prep)
 - **Phase:** implementation (Waves 1–4 done, pivot done, tests done, dead-code sweep done, polish remaining)
-- **Focus:** v1.2 player — **Waves P1 → P5 ✅ DONE**. Full backing infrastructure for preview playback is on disk: HTTP server (P3), ffmpeg orchestrator (P4), stereo pair derivation (P4), SHA-256 hash-keyed cache with LRU eviction (P5). Next: **Wave P6** (`PlaybackCoordinator` + `PlaybackState` — glues the four services together and observes `ScanModel.selectedClipID`).
-- **Status:** v1 feature-complete + public on GitHub. **79 tests green** (14 new for PreviewCache: hashing, preflight, state lifecycle, LRU eviction). Source ~2540 LOC (was 2290; +250 cache). .app **133 MB**. All 4 preview services shipped as self-contained units; P6 adds the orchestration layer.
-- **Last updated:** 2026-04-22 (Wave P5 complete — PreviewCache with 14 tests + caught the `appendingPathComponent` fs-probe URL equality gotcha; ready for Wave P6)
+- **Focus:** v1.2 player — **Waves P1 → P8.1 + P8.4 ✅ DONE**. Adversarial test coverage + clean app-quit cleanup landed. Remaining v1.2 work: **§P7.4 manual QA** (user, real MXF data) and **§P8.3 memory profiling** (Instruments) — both require human + real workload.
+- **Status:** **92 tests green**, build clean (0 errors, 0 Swift warnings). Smoke-launch + Cmd-Q cleanup verified — no orphan processes after quit. Source ~3260 LOC. App-quit hardening uses `@NSApplicationDelegateAdaptor` + `.terminateLater` + 500 ms SIGTERM grace + SIGKILL fallback. Documented limitation: SIGKILL of the app itself (force-quit, crash) leaves ffmpeg reparented to launchd — no Darwin equivalent of `PR_SET_PDEATHSIG`.
+- **Last updated:** 2026-04-25 (Wave P8.4 complete — AppDelegate + coordinator.shutdown() + activePIDs tracking; suite 92/92; v1.2 effectively code-complete, awaiting user manual QA)
 
 ## Funnel Progress (Ralph-style)
 

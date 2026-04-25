@@ -3,24 +3,41 @@ import UniformTypeIdentifiers
 import AppKit
 
 struct ContentView: View {
+    let model: ScanModel
+    let playbackState: PlaybackState
+    let coordinator: PlaybackCoordinator?
+
     @AppStorage("showSidebar") private var showSidebar: Bool = true
     @AppStorage("showInspector") private var showInspector: Bool = false
 
-    @State private var model = ScanModel()
-    @State private var selectedClipID: Clip.ID?
     @State private var showFolderImporter = false
 
     var body: some View {
+        @Bindable var model = model
         HSplitView {
             if showSidebar {
                 SidebarPlaceholder()
                     .frame(minWidth: 220, idealWidth: 300, maxWidth: 500)
             }
-            ScanMainView(model: model, selectedClipID: $selectedClipID)
+            ScanMainView(model: model, selectedClipID: $model.selectedClipID)
                 .frame(minWidth: 500)
             if showInspector {
-                ClipInspectorView(model: model, selectedClipID: selectedClipID)
-                    .frame(minWidth: 260, idealWidth: 320, maxWidth: 500)
+                ClipInspectorView(
+                    model: model,
+                    selectedClipID: model.selectedClipID,
+                    playbackState: playbackState,
+                    onPairSelected: { pair in coordinator?.selectPair(pair) }
+                )
+                .frame(minWidth: 260, idealWidth: 320, maxWidth: 500)
+            }
+        }
+        .onChange(of: showInspector) { _, isShown in
+            if !isShown {
+                // Inspector hidden → stop playback, free AVPlayer / transcoder / server resources.
+                // Clearing selection via the coordinator's .idle path is cleaner than calling stop():
+                // selection=nil flows through handleSelectionChange which cancels the prep task AND
+                // resets playbackState. coordinator.stop() is reserved for full shutdown.
+                model.selectedClipID = nil
             }
         }
         .toolbar {
@@ -327,6 +344,8 @@ private struct ClipTableView: View {
 private struct ClipInspectorView: View {
     let model: ScanModel
     let selectedClipID: Clip.ID?
+    let playbackState: PlaybackState
+    let onPairSelected: (AudioPair) -> Void
 
     private var selectedClip: Clip? {
         guard let id = selectedClipID else { return nil }
@@ -352,6 +371,20 @@ private struct ClipInspectorView: View {
 
     @ViewBuilder
     private func inspector(for clip: Clip) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            PlayerView(playbackState: playbackState, onPairSelected: onPairSelected)
+                .frame(minHeight: 240)
+            Divider()
+            ScrollView {
+                metadataGrid(for: clip)
+                    .padding(12)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private func metadataGrid(for clip: Clip) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(clip.displayName)
                 .font(.headline)
@@ -381,17 +414,14 @@ private struct ClipInspectorView: View {
                 .font(.caption)
                 .foregroundColor(Theme.secondaryText)
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(clip.files) { file in
-                        fileRow(file)
-                    }
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(clip.files) { file in
+                    fileRow(file)
                 }
             }
 
             Spacer()
         }
-        .padding(12)
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
@@ -528,8 +558,13 @@ final class ScanModel {
     // MARK: - Observable state
 
     private(set) var state: ScanState = .idle
-    private(set) var clips: [Clip] = []
+    var clips: [Clip] = []
     private(set) var currentFolder: URL?
+
+    /// The clip row selected in `ClipTableView`. Lives here (not in ContentView @State)
+    /// so `PlaybackCoordinator` can observe it via `withObservationTracking` —
+    /// the Observation framework only tracks reads on @Observable types.
+    var selectedClipID: Clip.ID?
 
     /// Wall-clock start of the in-progress scan. Cleared on cancel; left stale
     /// after completion (overwritten on next `start`). Read only while
